@@ -108,23 +108,23 @@ pub struct FileManager {
 }
 
 impl FileManager {
-    pub fn new(db_dir: PathBuf) -> Self {
+    pub fn new(db_dir: PathBuf) -> io::Result<Self> {
         let is_new = db_dir.exists();
         if !is_new {
-            fs::create_dir(&db_dir).unwrap();
+            fs::create_dir(&db_dir)?;
         };
-        let paths = fs::read_dir(&db_dir).unwrap();
+        let paths = fs::read_dir(&db_dir)?;
         for p in paths.flatten() {
             if p.path().display().to_string().starts_with("temp") {
                 fs::remove_dir(p.path()).unwrap();
             };
         }
-        FileManager {
+        Ok(FileManager {
             db_dir,
             block_size: BLOCK_SIZE,
             open_files: HashMap::new(),
             is_new,
-        }
+        })
     }
 
     pub fn block_size(&self) -> u64 {
@@ -137,8 +137,8 @@ impl FileManager {
 
     pub fn length(&mut self, filename: &str) -> io::Result<u64> {
         let file = self.get_file(filename)?;
-        let f = file.metadata()?;
-        Ok(f.len() / self.block_size())
+        let file_size = file.metadata()?.len();
+        Ok(file_size / self.block_size())
     }
 
     pub fn read(&mut self, block_id: &BlockId, p: &mut Page) -> io::Result<()> {
@@ -190,10 +190,12 @@ impl FileManager {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
+    use crate::test_util;
 
     #[test]
-    fn page_int() {
+    fn page_set_get_int() {
         let mut page_1 = Page::new(BLOCK_SIZE);
         page_1.set_int(0, 64).unwrap();
         assert_eq!(page_1.get_int(0).unwrap(), 64);
@@ -205,7 +207,7 @@ mod tests {
     }
 
     #[test]
-    fn page_bytes() {
+    fn page_set_get_bytes() {
         let mut page_1 = Page::new(BLOCK_SIZE);
         page_1.set_bytes(0, &[0, 0, 0, 4]).unwrap();
         assert_eq!(page_1.get_bytes(0).unwrap(), &[0, 0, 0, 4]);
@@ -217,16 +219,16 @@ mod tests {
     }
 
     #[test]
-    fn page_string() {
+    fn page_set_get_string() {
         let mut page = Page::new(4096);
         page.set_string(0, "abcdefghijklmn").unwrap();
         assert_eq!(page.get_string(0).unwrap(), "abcdefghijklmn");
     }
 
     #[test]
-    fn file_manager() {
+    fn file_manager_operations() {
         let test_dir = PathBuf::from("test_dir_1");
-        let mut file_manager = FileManager::new(test_dir.clone());
+        let mut file_manager = FileManager::new(test_dir.clone()).unwrap();
         let block = BlockId::new("test.db".to_owned(), 0);
         let mut page = Page::new(BLOCK_SIZE);
         page.set_string(0, "sample text").unwrap();
@@ -234,7 +236,6 @@ mod tests {
         file_manager.write(&block, &mut page).unwrap();
         file_manager.read(&block, &mut page).unwrap();
         assert_eq!(page.get_string(0).unwrap(), "sample text");
-        fs::remove_file(format!("{}/{}", &test_dir.display(), "test.db")).unwrap();
-        fs::remove_dir(test_dir).unwrap();
+        test_util::remove_test_file_and_dir(test_dir, "test.db").unwrap();
     }
 }

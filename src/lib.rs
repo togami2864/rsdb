@@ -1,8 +1,9 @@
-use std::path::PathBuf;
+pub mod file;
+pub mod log;
+mod test_util;
 
 use file::FileManager;
-
-pub mod file;
+use std::{io, path::PathBuf};
 
 #[derive(Debug)]
 pub struct RSDB {
@@ -10,10 +11,10 @@ pub struct RSDB {
 }
 
 impl RSDB {
-    pub fn new(db_path: PathBuf, _block_size: u64, _pool: u64) -> Self {
-        RSDB {
-            file_manager: FileManager::new(db_path),
-        }
+    pub fn new(db_path: PathBuf, _block_size: u64, _pool: u64) -> io::Result<Self> {
+        Ok(RSDB {
+            file_manager: FileManager::new(db_path)?,
+        })
     }
 }
 
@@ -24,9 +25,9 @@ mod tests {
     use super::*;
     use crate::file::{BlockId, Page, BLOCK_SIZE};
     #[test]
-    fn test_file() {
+    fn test_file_manager() {
         let db_path = PathBuf::from("test_dir");
-        let db = RSDB::new(db_path, 400, 8);
+        let db = RSDB::new(db_path, 400, 8).unwrap();
         let mut fm = db.file_manager;
 
         let block_id = BlockId::new("testfile".to_string(), 2);
