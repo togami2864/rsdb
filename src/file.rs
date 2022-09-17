@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub const BLOCK_SIZE: u64 = 4096;
 pub const INTEGER_SIZE: u64 = 4;
@@ -108,8 +108,8 @@ pub struct FileManager {
 }
 
 impl FileManager {
-    pub fn new(db_dir: PathBuf) -> io::Result<Self> {
-        let is_new = db_dir.exists();
+    pub fn new(db_dir: impl AsRef<Path>) -> io::Result<Self> {
+        let is_new = db_dir.as_ref().exists();
         if !is_new {
             fs::create_dir(&db_dir)?;
         };
@@ -120,7 +120,7 @@ impl FileManager {
             };
         }
         Ok(FileManager {
-            db_dir,
+            db_dir: db_dir.as_ref().to_path_buf(),
             block_size: BLOCK_SIZE,
             open_files: HashMap::new(),
             is_new,
@@ -175,7 +175,7 @@ impl FileManager {
         let file = match self.open_files.entry(filename.to_string()) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
-                let path = format!("{}/{}", self.db_dir.display(), filename);
+                let path = Path::new(&self.db_dir).join(filename);
                 let f = OpenOptions::new()
                     .write(true)
                     .read(true)
