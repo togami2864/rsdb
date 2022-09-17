@@ -1,9 +1,11 @@
+use std::cell::RefCell;
 use std::collections::hash_map::{DefaultHasher, Entry};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 pub const BLOCK_SIZE: u64 = 4096;
 pub const INTEGER_SIZE: u64 = 8;
@@ -16,8 +18,11 @@ pub struct BlockId {
 }
 
 impl BlockId {
-    pub fn new(filename: String, block_id: u64) -> Self {
-        Self { filename, block_id }
+    pub fn new(filename: impl Into<String>, block_id: u64) -> Self {
+        Self {
+            filename: filename.into(),
+            block_id,
+        }
     }
 
     pub fn filename(&self) -> &str {
@@ -101,7 +106,7 @@ impl Page {
 /// Read and Write pages to disk blocks
 #[derive(Debug)]
 pub struct FileManager {
-    open_files: HashMap<String, File>,
+    open_files: Rc<RefCell<HashMap<String, File>>>,
     db_dir: PathBuf,
     block_size: u64,
     is_new: bool,
@@ -122,7 +127,7 @@ impl FileManager {
         Ok(FileManager {
             db_dir: db_dir.as_ref().to_path_buf(),
             block_size: BLOCK_SIZE,
-            open_files: HashMap::new(),
+            open_files: Rc::new(RefCell::new(HashMap::new())),
             is_new,
         })
     }
@@ -142,7 +147,7 @@ impl FileManager {
     }
 
     pub fn read(&mut self, block_id: &BlockId, p: &mut Page) -> io::Result<()> {
-        let file = self.get_file(block_id.filename())?;
+        let mut file = self.get_file(block_id.filename())?;
         let offset = BLOCK_SIZE * block_id.number() as u64;
         file.seek(SeekFrom::Start(offset))?;
         file.read_exact(p.contents())?;
@@ -150,7 +155,7 @@ impl FileManager {
     }
 
     pub fn write(&mut self, block_id: &BlockId, p: &mut Page) -> io::Result<()> {
-        let file = self.get_file(block_id.filename())?;
+        let mut file = self.get_file(block_id.filename())?;
         let offset = BLOCK_SIZE * block_id.number();
         file.seek(SeekFrom::Start(offset))?;
         file.write_all(p.contents())?;
@@ -165,15 +170,15 @@ impl FileManager {
         let offset = self.block_size * block.number();
 
         let empty_buf = &[];
-        let file = self.get_file(filename)?;
+        let mut file = self.get_file(filename)?;
         file.seek(SeekFrom::Start(offset))?;
         file.write_all(empty_buf)?;
         Ok(block)
     }
 
-    pub fn get_file(&mut self, filename: &str) -> io::Result<&mut File> {
-        let file = match self.open_files.entry(filename.to_string()) {
-            Entry::Occupied(entry) => entry.into_mut(),
+    pub fn get_file(&mut self, filename: &str) -> io::Result<File> {
+        match self.open_files.borrow_mut().entry(filename.to_string()) {
+            Entry::Occupied(entry) => entry.into_mut().try_clone(),
             Entry::Vacant(entry) => {
                 let path = Path::new(&self.db_dir).join(filename);
                 let f = OpenOptions::new()
@@ -181,10 +186,9 @@ impl FileManager {
                     .read(true)
                     .create(true)
                     .open(path)?;
-                entry.insert(f)
+                entry.insert(f).try_clone()
             }
-        };
-        Ok(file)
+        }
     }
 }
 
@@ -227,15 +231,16 @@ mod tests {
 
     #[test]
     fn file_manager_operations() {
-        let test_dir = PathBuf::from("test_dir_1");
-        let mut file_manager = FileManager::new(test_dir.clone()).unwrap();
-        let block = BlockId::new("test.db".to_owned(), 0);
+        let test_dir = "test_dir_1";
+        let test_db_file_name = "test.db";
+        let mut file_manager = FileManager::new(test_dir).unwrap();
+        let block = BlockId::new(test_db_file_name, 0);
         let mut page = Page::new(BLOCK_SIZE);
         page.set_string(0, "sample text").unwrap();
 
         file_manager.write(&block, &mut page).unwrap();
         file_manager.read(&block, &mut page).unwrap();
         assert_eq!(page.get_string(0).unwrap(), "sample text");
-        test_util::remove_test_file_and_dir(test_dir, "test.db").unwrap();
+        test_util::remove_test_file_and_dir(test_dir, test_db_file_name).unwrap();
     }
 }
