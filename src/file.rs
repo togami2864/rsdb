@@ -6,7 +6,7 @@ use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 pub const BLOCK_SIZE: u64 = 4096;
-pub const INTEGER_SIZE: u64 = 4;
+pub const INTEGER_SIZE: u64 = 8;
 
 /// `BlockId` identifies a specific block by its file name and logical block number
 #[derive(Debug, Hash, Eq, PartialEq)]
@@ -48,37 +48,37 @@ impl Page {
         }
     }
 
-    /// read 4 bytes from offset value
-    pub fn get_int(&mut self, offset: u64) -> io::Result<i32> {
+    /// read 8 bytes from offset value
+    pub fn get_int(&mut self, offset: u64) -> io::Result<u64> {
         self.bb.seek(SeekFrom::Start(offset))?;
-        let buf: &mut [u8; 4] = &mut [0; 4];
+        let buf: &mut [u8; 8] = &mut [0; 8];
         self.bb.read_exact(buf)?;
-        Ok(i32::from_be_bytes(*buf))
+        Ok(u64::from_be_bytes(*buf))
     }
 
     /// write integer to byte buffer from offset
-    pub fn set_int(&mut self, offset: u64, val: i32) -> io::Result<()> {
+    pub fn set_int(&mut self, offset: u64, val: u64) -> io::Result<()> {
         self.bb.seek(SeekFrom::Start(offset))?;
-        let data = i32::to_be_bytes(val);
+        let data = u64::to_be_bytes(val);
         self.bb.write_all(&data)?;
         Ok(())
     }
 
-    /// read 4 bytes and return it
+    /// read 8 bytes and return it
     pub fn get_bytes(&mut self, offset: u64) -> io::Result<Vec<u8>> {
-        let len = self.get_int(offset)?;
-        let mut buf = vec![0; len as usize];
+        let len = self.get_int(offset)? as usize;
+        let mut buf = vec![0; len];
         self.bb.read_exact(buf.as_mut())?;
         Ok(buf)
     }
 
     pub fn set_bytes(&mut self, offset: u64, byte: &[u8]) -> io::Result<()> {
-        self.set_int(offset, byte.len() as i32)?;
+        self.set_int(offset, byte.len() as u64)?;
         self.bb.write_all(byte).unwrap();
         Ok(())
     }
 
-    /// read 4bytes and convert it to String
+    /// read 8bytes and convert it to String
     pub fn get_string(&mut self, offset: u64) -> io::Result<String> {
         let byte = self.get_bytes(offset)?;
         Ok(String::from_utf8(byte).unwrap())
