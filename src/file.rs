@@ -239,17 +239,17 @@ mod tests {
 
     #[test]
     fn file_manager_operations() {
-        let test_dir = "test_dir_1";
-        let test_db_file_name = "test.db";
-        let mut file_manager = FileManager::new(test_dir).unwrap();
-        let block = BlockId::new(test_db_file_name, 0);
+        let dirname = "test_dir_1";
+        let filename = "test.db";
+        let mut file_manager = FileManager::new(dirname).unwrap();
+        let block = BlockId::new(filename, 0);
         let mut page = Page::new(BLOCK_SIZE);
         page.set_string(0, "sample text").unwrap();
 
         file_manager.write(&block, &mut page).unwrap();
         file_manager.read(&block, &mut page).unwrap();
         assert_eq!(page.get_string(0).unwrap(), "sample text");
-        test_util::remove_test_file_and_dir(test_dir, test_db_file_name).unwrap();
+        test_util::remove_test_file_and_dir(dirname, filename).unwrap();
     }
 
     #[test]
