@@ -11,7 +11,7 @@ pub const BLOCK_SIZE: u64 = 4096;
 pub const INTEGER_SIZE: u64 = 8;
 
 /// `BlockId` identifies a specific block by its file name and logical block number
-#[derive(Debug, Hash, Eq, PartialEq)]
+#[derive(Debug, Hash, Eq, PartialEq, Clone)]
 pub struct BlockId {
     filename: String,
     block_id: u64,
@@ -48,8 +48,10 @@ pub struct Page {
 
 impl Page {
     pub fn new(capacity: u64) -> Self {
+        let mut buf = Vec::with_capacity(capacity as usize);
+        buf.resize(capacity as usize, 0);
         Page {
-            bb: Cursor::new(Vec::with_capacity(capacity as usize)),
+            bb: Cursor::new(buf),
         }
     }
 
@@ -94,12 +96,18 @@ impl Page {
         Ok(())
     }
 
-    pub fn max_length(&self, strlen: usize) -> u64 {
+    pub fn max_length(strlen: usize) -> u64 {
         INTEGER_SIZE + strlen as u64
     }
 
-    fn contents(&mut self) -> &mut Vec<u8> {
+    pub fn contents(&mut self) -> &mut Vec<u8> {
         self.bb.get_mut()
+    }
+}
+
+impl From<Vec<u8>> for Page {
+    fn from(b: Vec<u8>) -> Self {
+        Page { bb: Cursor::new(b) }
     }
 }
 
@@ -242,5 +250,24 @@ mod tests {
         file_manager.read(&block, &mut page).unwrap();
         assert_eq!(page.get_string(0).unwrap(), "sample text");
         test_util::remove_test_file_and_dir(test_dir, test_db_file_name).unwrap();
+    }
+
+    #[test]
+    fn file_manager_operations_with_offset() {
+        let dirname = "test_dir_2";
+        let filename = "test_file";
+        let mut fm = FileManager::new(dirname).unwrap();
+        let block_id = BlockId::new(filename, 2);
+
+        let mut p1 = Page::new(BLOCK_SIZE);
+        let pos_1 = 88;
+        p1.set_string(pos_1, "abcdefghijklm").unwrap();
+
+        let size = Page::max_length("abcdefghijklm".len());
+        let pos_2 = pos_1 + size;
+        p1.set_int(pos_2, 345).unwrap();
+        fm.write(&block_id, &mut p1).unwrap();
+
+        test_util::remove_test_file_and_dir(dirname, filename).unwrap();
     }
 }
