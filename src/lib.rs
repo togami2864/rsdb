@@ -1,7 +1,6 @@
 pub mod buffer;
 pub mod file;
 pub mod log;
-mod test_util;
 
 use file::FileManager;
 use log::LogManager;

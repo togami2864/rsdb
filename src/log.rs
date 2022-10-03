@@ -146,7 +146,8 @@ impl Iterator for LogIterator {
 
 #[cfg(test)]
 mod tests {
-    use crate::test_util;
+
+    use std::{fs, path::PathBuf};
 
     use super::*;
 
@@ -160,8 +161,14 @@ mod tests {
 
     #[test]
     fn log_manager_operations() {
-        let dirname = "test_dir";
-        let filename = "log_test";
+        let dirname = "__test_3/dir3";
+        let filename = "testfile";
+        let mut path = PathBuf::from(dirname);
+        path.push(filename);
+        if path.to_owned().exists() {
+            fs::remove_dir_all(dirname).expect("failed to remove dir");
+        }
+
         let fm = Rc::new(RefCell::new(FileManager::new(dirname).unwrap()));
         let mut lm = LogManager::new(fm, filename.to_string());
         println!("creating records: ");
@@ -178,6 +185,9 @@ mod tests {
             assert_eq!(s.to_string(), format!("record{}", val).to_string());
         }
 
-        test_util::remove_test_file_and_dir(dirname, filename).unwrap();
+        if path.to_owned().exists() {
+            fs::remove_dir_all(dirname).expect("failed to remove dir");
+            fs::remove_dir("__test_3").expect("failed to remove dir");
+        }
     }
 }

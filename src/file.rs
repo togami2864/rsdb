@@ -1,8 +1,9 @@
 use std::cell::RefCell;
-use std::collections::hash_map::{DefaultHasher, Entry};
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -32,11 +33,11 @@ impl BlockId {
     pub fn number(&self) -> u64 {
         self.block_id
     }
+}
 
-    pub fn hash(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        format!("[file {}, block {}]", self.filename(), self.number()).hash(&mut hasher);
-        hasher.finish()
+impl fmt::Display for BlockId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[file {}, block {}]", self.filename(), self.number())
     }
 }
 
@@ -48,8 +49,7 @@ pub struct Page {
 
 impl Page {
     pub fn new(capacity: u64) -> Self {
-        let mut buf = Vec::with_capacity(capacity as usize);
-        buf.resize(capacity as usize, 0);
+        let buf = vec![0; capacity as usize];
         Page {
             bb: Cursor::new(buf),
         }
@@ -122,21 +122,21 @@ pub struct FileManager {
 
 impl FileManager {
     pub fn new(db_dir: impl AsRef<Path>) -> io::Result<Self> {
-        let is_new = db_dir.as_ref().exists();
-        if !is_new {
-            fs::create_dir(&db_dir)?;
+        let is_exist = db_dir.as_ref().exists();
+        if !is_exist {
+            fs::create_dir_all(&db_dir).expect("Failed to create dir");
         };
         let paths = fs::read_dir(&db_dir)?;
         for p in paths.flatten() {
             if p.path().display().to_string().starts_with("temp") {
-                fs::remove_dir(p.path()).unwrap();
+                fs::remove_dir(p.path()).expect("Failed to remove dir 'temp'");
             };
         }
         Ok(FileManager {
             db_dir: db_dir.as_ref().to_path_buf(),
             block_size: BLOCK_SIZE,
             open_files: Rc::new(RefCell::new(HashMap::new())),
-            is_new,
+            is_new: !is_exist,
         })
     }
 
@@ -202,60 +202,74 @@ impl FileManager {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
-    use crate::test_util;
 
     #[test]
-    fn page_set_get_int() {
-        let mut page_1 = Page::new(BLOCK_SIZE);
-        page_1.set_int(0, 64).unwrap();
-        assert_eq!(page_1.get_int(0).unwrap(), 64);
+    fn set_and_get_integer_from_page() {
+        let mut p1 = Page::new(BLOCK_SIZE);
+        p1.set_int(0, 64).unwrap();
+        assert_eq!(p1.get_int(0).unwrap(), 64);
 
-        let mut page_2 = Page::new(BLOCK_SIZE);
-        page_2.set_int(16, 64).unwrap();
-        assert_eq!(page_2.get_int(16).unwrap(), 64);
-        assert_eq!(page_2.get_int(0).unwrap(), 0);
+        let mut p2 = Page::new(BLOCK_SIZE);
+        p2.set_int(16, 64).unwrap();
+        assert_eq!(p2.get_int(16).unwrap(), 64);
+        assert_eq!(p2.get_int(0).unwrap(), 0);
     }
 
     #[test]
-    fn page_set_get_bytes() {
-        let mut page_1 = Page::new(BLOCK_SIZE);
-        page_1.set_bytes(0, &[0, 0, 0, 4]).unwrap();
-        assert_eq!(page_1.get_bytes(0).unwrap(), &[0, 0, 0, 4]);
+    fn set_and_get_bytes_from_page() {
+        let mut p1 = Page::new(BLOCK_SIZE);
+        p1.set_bytes(0, &[0, 0, 0, 4]).unwrap();
+        assert_eq!(p1.get_bytes(0).unwrap(), &[0, 0, 0, 4]);
 
-        let mut page_2 = Page::new(BLOCK_SIZE);
-        page_2.set_bytes(16, &[0, 0, 0, 128]).unwrap();
-        assert_eq!(page_2.get_bytes(16).unwrap(), &[0, 0, 0, 128]);
-        assert_eq!(page_2.get_int(0).unwrap(), 0);
+        let mut p2 = Page::new(BLOCK_SIZE);
+        p2.set_bytes(16, &[0, 0, 0, 128]).unwrap();
+        assert_eq!(p2.get_bytes(16).unwrap(), &[0, 0, 0, 128]);
+        assert_eq!(p2.get_int(0).unwrap(), 0);
     }
 
     #[test]
-    fn page_set_get_string() {
+    fn set_and_get_string_from_page() {
         let mut page = Page::new(4096);
         page.set_string(0, "abcdefghijklmn").unwrap();
         assert_eq!(page.get_string(0).unwrap(), "abcdefghijklmn");
     }
 
     #[test]
-    fn file_manager_operations() {
-        let dirname = "test_dir_1";
-        let filename = "test.db";
-        let mut file_manager = FileManager::new(dirname).unwrap();
-        let block = BlockId::new(filename, 0);
-        let mut page = Page::new(BLOCK_SIZE);
-        page.set_string(0, "sample text").unwrap();
+    fn read_and_write_file() {
+        let dirname = "__test_1/dir1";
+        let filename = "testfile";
+        let mut path = PathBuf::from(dirname);
+        path.push(filename);
+        if path.to_owned().exists() {
+            fs::remove_dir_all(dirname).expect("failed to remove dir");
+        }
 
-        file_manager.write(&block, &mut page).unwrap();
-        file_manager.read(&block, &mut page).unwrap();
-        assert_eq!(page.get_string(0).unwrap(), "sample text");
-        test_util::remove_test_file_and_dir(dirname, filename).unwrap();
+        let mut file_manager = FileManager::new(dirname).expect("here");
+        let block = BlockId::new(filename, 0);
+        let mut p = Page::new(BLOCK_SIZE);
+        p.set_string(0, "sample text").unwrap();
+
+        file_manager.write(&block, &mut p).unwrap();
+        file_manager.read(&block, &mut p).unwrap();
+        assert_eq!(p.get_string(0).unwrap(), "sample text");
+
+        if path.to_owned().exists() {
+            fs::remove_dir_all(dirname).expect("failed to remove dir");
+            fs::remove_dir("__test_1").expect("failed to remove dir");
+        }
     }
 
     #[test]
-    fn file_manager_operations_with_offset() {
-        let dirname = "test_dir_2";
-        let filename = "test_file";
+    fn read_and_write_file_with_offset() {
+        let dirname = "__test_2/dir2";
+        let filename = "testfile";
+        let mut path = PathBuf::from(dirname);
+        path.push(filename);
+        if path.to_owned().exists() {
+            fs::remove_dir_all(dirname).expect("failed to remove dir");
+        }
+
         let mut fm = FileManager::new(dirname).unwrap();
         let block_id = BlockId::new(filename, 2);
 
@@ -268,6 +282,9 @@ mod tests {
         p1.set_int(pos_2, 345).unwrap();
         fm.write(&block_id, &mut p1).unwrap();
 
-        test_util::remove_test_file_and_dir(dirname, filename).unwrap();
+        if path.to_owned().exists() {
+            fs::remove_dir_all(dirname).expect("failed to remove dir");
+            fs::remove_dir("__test_2").expect("failed to remove dir");
+        }
     }
 }
