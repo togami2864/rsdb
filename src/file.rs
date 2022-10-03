@@ -11,18 +11,26 @@ use std::rc::Rc;
 pub const BLOCK_SIZE: u64 = 4096;
 pub const INTEGER_SIZE: u64 = 8;
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+struct BlockNum(pub u64);
+impl BlockNum {
+    pub fn as_u64(&self) -> u64 {
+        self.0
+    }
+}
+
 /// `BlockId` identifies a specific block by its file name and logical block number
 #[derive(Debug, Hash, Eq, PartialEq, Clone)]
 pub struct BlockId {
     filename: String,
-    block_id: u64,
+    block_id: BlockNum,
 }
 
 impl BlockId {
     pub fn new(filename: impl Into<String>, block_id: u64) -> Self {
         Self {
             filename: filename.into(),
-            block_id,
+            block_id: BlockNum(block_id),
         }
     }
 
@@ -31,7 +39,7 @@ impl BlockId {
     }
 
     pub fn number(&self) -> u64 {
-        self.block_id
+        self.block_id.as_u64()
     }
 }
 
