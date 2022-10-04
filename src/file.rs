@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fmt;
@@ -6,7 +5,7 @@ use std::fs::{self, File, OpenOptions};
 use std::hash::Hash;
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 pub const BLOCK_SIZE: u64 = 4096;
 pub const INTEGER_SIZE: u64 = 8;
@@ -122,7 +121,7 @@ impl From<Vec<u8>> for Page {
 /// Read and Write pages to disk blocks
 #[derive(Debug)]
 pub struct FileManager {
-    open_files: Rc<RefCell<HashMap<String, File>>>,
+    open_files: HashMap<String, Arc<Mutex<File>>>,
     db_dir: PathBuf,
     block_size: u64,
     is_new: bool,
@@ -143,7 +142,7 @@ impl FileManager {
         Ok(FileManager {
             db_dir: db_dir.as_ref().to_path_buf(),
             block_size: BLOCK_SIZE,
-            open_files: Rc::new(RefCell::new(HashMap::new())),
+            open_files: HashMap::new(),
             is_new: !is_exist,
         })
     }
@@ -157,24 +156,34 @@ impl FileManager {
     }
 
     pub fn length(&mut self, filename: &str) -> io::Result<u64> {
-        let file = self.get_file(filename)?;
-        let file_size = file.metadata()?.len();
+        // let file = self.get_file(filename)?;
+        let file_size = fs::metadata(filename)?.len();
         Ok(file_size / self.block_size())
     }
 
     pub fn read(&mut self, block_id: &BlockId, p: &mut Page) -> io::Result<()> {
-        let mut file = self.get_file(block_id.filename())?;
-        let offset = BLOCK_SIZE * block_id.number() as u64;
-        file.seek(SeekFrom::Start(offset))?;
-        file.read_exact(p.contents())?;
+        let offset = self.block_size() * block_id.number() as u64;
+        match self.get_file(block_id.filename()) {
+            Ok(file) => {
+                let mut f = file.lock().expect("Failed to lock");
+                f.seek(SeekFrom::Start(offset))?;
+                f.read_exact(p.contents())?;
+            }
+            Err(_) => todo!(),
+        }
         Ok(())
     }
 
     pub fn write(&mut self, block_id: &BlockId, p: &mut Page) -> io::Result<()> {
-        let mut file = self.get_file(block_id.filename())?;
-        let offset = BLOCK_SIZE * block_id.number();
-        file.seek(SeekFrom::Start(offset))?;
-        file.write_all(p.contents())?;
+        let offset = self.block_size() * block_id.number();
+        match self.get_file(block_id.filename()) {
+            Ok(file) => {
+                let mut f = file.lock().expect("Failed to lock");
+                f.seek(SeekFrom::Start(offset))?;
+                f.write_all(p.contents())?;
+            }
+            Err(_) => todo!(),
+        }
         Ok(())
     }
 
@@ -186,15 +195,17 @@ impl FileManager {
         let offset = self.block_size * block.number();
 
         let empty_buf = &[];
-        let mut file = self.get_file(filename)?;
-        file.seek(SeekFrom::Start(offset))?;
-        file.write_all(empty_buf)?;
+        {
+            let mut file = self.get_file(filename)?.lock().expect("Failed to lock");
+            file.seek(SeekFrom::Start(offset))?;
+            file.write_all(empty_buf)?;
+        }
         Ok(block)
     }
 
-    pub fn get_file(&mut self, filename: &str) -> io::Result<File> {
-        match self.open_files.borrow_mut().entry(filename.to_string()) {
-            Entry::Occupied(entry) => entry.into_mut().try_clone(),
+    pub fn get_file(&mut self, filename: &str) -> io::Result<&mut Arc<Mutex<File>>> {
+        match self.open_files.entry(filename.to_string()) {
+            Entry::Occupied(entry) => Ok(entry.into_mut()),
             Entry::Vacant(entry) => {
                 let path = Path::new(&self.db_dir).join(filename);
                 let f = OpenOptions::new()
@@ -202,7 +213,7 @@ impl FileManager {
                     .read(true)
                     .create(true)
                     .open(path)?;
-                entry.insert(f).try_clone()
+                Ok(entry.insert(Arc::new(Mutex::new(f))))
             }
         }
     }
