@@ -3,8 +3,7 @@ use crate::{
     log::LogManager,
 };
 use std::{
-    cell::RefCell,
-    rc::Rc,
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -12,8 +11,8 @@ pub const MAX_TIME: u128 = 10000;
 
 #[derive(Debug)]
 pub struct Buffer {
-    file_manager: Rc<RefCell<FileManager>>,
-    log_manager: Rc<RefCell<LogManager>>,
+    file_manager: Arc<Mutex<FileManager>>,
+    log_manager: Arc<Mutex<LogManager>>,
     contents: Page,
     block: Option<BlockId>,
     pins: u64,
@@ -22,14 +21,14 @@ pub struct Buffer {
 }
 
 impl Buffer {
-    pub fn new(fm: Rc<RefCell<FileManager>>, lm: Rc<RefCell<LogManager>>) -> Self {
-        let block_size = fm.borrow().block_size();
+    pub fn new(fm: Arc<Mutex<FileManager>>, lm: Arc<Mutex<LogManager>>) -> Self {
+        let block_size = fm.lock().unwrap().block_size();
         Buffer {
             file_manager: fm,
             log_manager: lm,
             contents: Page::new(block_size),
             block: None,
-            pins: 0, // block: BlockId::new
+            pins: 0,
             txnum: -1,
             lsn: -1,
         }
@@ -56,25 +55,19 @@ impl Buffer {
 
     pub fn assign_to_block(&mut self, block: BlockId) {
         self.flush();
-        self.file_manager
-            .borrow_mut()
-            .read(&block, &mut self.contents)
-            .unwrap();
+        let mut fm = self.file_manager.lock().unwrap();
+        fm.read(&block, &mut self.contents).unwrap();
         self.block = Some(block);
         self.pins = 0;
     }
 
     fn flush(&mut self) {
         if self.txnum >= 0 {
-            self.log_manager
-                .borrow_mut()
-                .flush_with_lsn(self.lsn as u64)
-                .unwrap();
+            let mut fm = self.file_manager.lock().unwrap();
+            let mut lm = self.log_manager.lock().unwrap();
+            lm.flush_with_lsn(self.lsn as u64).unwrap();
             if let Some(blk) = &self.block {
-                self.file_manager
-                    .borrow_mut()
-                    .write(blk, &mut self.contents)
-                    .unwrap();
+                fm.write(blk, &mut self.contents).unwrap();
                 self.txnum -= 1;
             }
         }
@@ -91,16 +84,16 @@ impl Buffer {
 
 #[derive(Debug)]
 pub struct BufferManager {
-    buffer_pool: Vec<Rc<RefCell<Buffer>>>,
+    buffer_pool: Vec<Arc<Mutex<Buffer>>>,
     num_available: u64,
 }
 
 impl BufferManager {
-    pub fn new(fm: Rc<RefCell<FileManager>>, lm: Rc<RefCell<LogManager>>, num_buffs: u64) -> Self {
-        let mut buffer_pool: Vec<Rc<RefCell<Buffer>>> = Vec::new();
+    pub fn new(fm: Arc<Mutex<FileManager>>, lm: Arc<Mutex<LogManager>>, num_buffs: u64) -> Self {
+        let mut buffer_pool: Vec<Arc<Mutex<Buffer>>> = Vec::new();
         for index in 0..num_buffs {
-            let buf = Buffer::new(Rc::clone(&fm), Rc::clone(&lm));
-            buffer_pool.insert(index as usize, Rc::new(RefCell::new(buf)));
+            let buf = Buffer::new(Arc::clone(&fm), Arc::clone(&lm));
+            buffer_pool.insert(index as usize, Arc::new(Mutex::new(buf)));
         }
         BufferManager {
             buffer_pool,
@@ -114,20 +107,22 @@ impl BufferManager {
 
     pub fn flush_all(&mut self, txnum: i64) {
         for buf in self.buffer_pool.iter() {
-            if buf.borrow().modifying_tx() == txnum {
-                buf.borrow_mut().flush();
+            let mut buf = buf.lock().unwrap();
+            if buf.modifying_tx() == txnum {
+                buf.flush();
             }
         }
     }
 
-    pub fn unpin(&mut self, buff: Rc<RefCell<Buffer>>) {
-        buff.borrow_mut().unpin();
-        if !buff.borrow().is_pinned() {
+    pub fn unpin(&mut self, buf: Arc<Mutex<Buffer>>) {
+        let mut buf = buf.lock().unwrap();
+        buf.unpin();
+        if !buf.is_pinned() {
             self.num_available += 1;
         }
     }
 
-    pub fn pin(&mut self, block: BlockId) -> Rc<RefCell<Buffer>> {
+    pub fn pin(&mut self, block: BlockId) -> Arc<Mutex<Buffer>> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -148,35 +143,37 @@ impl BufferManager {
             > MAX_TIME
     }
 
-    fn try_to_pin(&mut self, block: BlockId) -> Option<Rc<RefCell<Buffer>>> {
-        if let Some(buf) = self.try_to_pin(block) {
-            if !buf.borrow().is_pinned() {
+    fn try_to_pin(&mut self, block: BlockId) -> Option<Arc<Mutex<Buffer>>> {
+        if let Some(buf) = self.find_existing_buffer(&block) {
+            let mut b = buf.as_ref().lock().unwrap();
+            if !b.is_pinned() {
                 self.num_available -= 1;
             };
-            buf.try_borrow_mut().unwrap().pin();
-            Some(buf)
+            b.pin();
+            drop(b);
+            Some(Arc::clone(&buf))
         } else {
             None
         }
     }
 
-    fn find_existing_buffer(&self, block: &BlockId) -> Option<Rc<RefCell<Buffer>>> {
+    fn find_existing_buffer(&self, block: &BlockId) -> Option<Arc<Mutex<Buffer>>> {
         self.buffer_pool
             .iter()
             .find(|b| {
-                if let Some(block_id) = &b.borrow().block {
+                if let Some(block_id) = &b.lock().unwrap().block {
                     block_id.eq(block)
                 } else {
                     false
                 }
             })
-            .map(Rc::clone)
+            .map(Arc::clone)
     }
 
-    fn choose_unpinned_buffer(&self) -> Option<Rc<RefCell<Buffer>>> {
+    fn choose_unpinned_buffer(&self) -> Option<Arc<Mutex<Buffer>>> {
         self.buffer_pool
             .iter()
-            .find(|b| !b.borrow().is_pinned())
-            .map(Rc::clone)
+            .find(|b| !b.lock().unwrap().is_pinned())
+            .map(Arc::clone)
     }
 }

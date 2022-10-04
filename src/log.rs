@@ -49,7 +49,7 @@ impl LogManager {
         let boundary = self.log_page.get_int(0)?;
         let record_size = log_record.len() as u64;
         let byte_needed = record_size + INTEGER_SIZE;
-        let boundary = if (boundary as i64 - byte_needed as i64) < INTEGER_SIZE as i64 {
+        let boundary = if (boundary - byte_needed) < INTEGER_SIZE {
             self.flush()?;
             self.cur_block = self.append_new_block()?;
             self.log_page.get_int(0)?
