@@ -156,8 +156,8 @@ impl FileManager {
     }
 
     pub fn length(&mut self, filename: &str) -> io::Result<u64> {
-        // let file = self.get_file(filename)?;
-        let file_size = fs::metadata(filename)?.len();
+        let f = self.get_file(filename)?;
+        let file_size = f.lock().unwrap().metadata()?.len();
         Ok(file_size / self.block_size())
     }
 

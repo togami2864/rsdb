@@ -1,10 +1,13 @@
-use std::{cell::RefCell, io, rc::Rc};
+use std::{
+    io,
+    sync::{Arc, Mutex},
+};
 
 use crate::file::{BlockId, FileManager, Page, INTEGER_SIZE};
 
 #[derive(Debug)]
 pub struct LogManager {
-    file_manager: Rc<RefCell<FileManager>>,
+    file_manager: Arc<Mutex<FileManager>>,
     log_file_name: String,
     log_page: Page,
     cur_block: BlockId,
@@ -13,20 +16,25 @@ pub struct LogManager {
 }
 
 impl LogManager {
-    pub fn new(fm: Rc<RefCell<FileManager>>, log_file_name: String) -> Self {
-        let block_size = fm.borrow_mut().block_size();
-        let mut log_page = Page::new(block_size);
-        let log_size = fm.borrow_mut().length(&log_file_name).unwrap();
-        let cur_block = if log_size == 0 {
-            let block = fm.borrow_mut().append(&log_file_name).unwrap();
-            log_page.set_int(0, fm.borrow_mut().block_size()).unwrap();
-            fm.borrow_mut().write(&block, &mut log_page).unwrap();
-            block
-        } else {
-            let cur = BlockId::new(&log_file_name, log_size - 1);
-            fm.borrow_mut().read(&cur, &mut log_page).unwrap();
-            cur
+    pub fn new(fm: Arc<Mutex<FileManager>>, log_file_name: String) -> Self {
+        let (log_page, cur_block) = {
+            let mut fm = fm.lock().unwrap();
+            let block_size = fm.block_size();
+            let mut log_page = Page::new(block_size);
+            let log_size = fm.length(&log_file_name).unwrap();
+            let cur_block = if log_size == 0 {
+                let block = fm.append(&log_file_name).unwrap();
+                log_page.set_int(0, fm.block_size()).unwrap();
+                fm.write(&block, &mut log_page).unwrap();
+                block
+            } else {
+                let cur = BlockId::new(&log_file_name, log_size - 1);
+                fm.read(&cur, &mut log_page).unwrap();
+                cur
+            };
+            (log_page, cur_block)
         };
+
         LogManager {
             file_manager: fm,
             log_file_name,
@@ -56,25 +64,19 @@ impl LogManager {
     }
 
     pub fn append_new_block(&mut self) -> io::Result<BlockId> {
-        let block = self
-            .file_manager
-            .borrow_mut()
-            .append(&self.log_file_name)
-            .unwrap();
-        self.log_page
-            .set_int(0, self.file_manager.borrow_mut().block_size())?;
-        self.file_manager
-            .borrow_mut()
-            .write(&block, &mut self.log_page)?;
+        let block = {
+            let mut fm = self.file_manager.lock().expect("Failed to lock");
+            let block = fm.append(&self.log_file_name).unwrap();
+            self.log_page.set_int(0, fm.block_size())?;
+            fm.write(&block, &mut self.log_page)?;
+            block
+        };
         Ok(block)
     }
 
     pub fn iterator(&mut self) -> io::Result<LogIterator> {
         self.flush().unwrap();
-        Ok(LogIterator::new(
-            Rc::clone(&self.file_manager),
-            self.cur_block.clone(),
-        ))
+        Ok(LogIterator::new(Arc::clone(&self.file_manager), self.cur_block.clone()).unwrap())
     }
 
     pub fn flush_with_lsn(&mut self, lsn: u64) -> io::Result<()> {
@@ -85,16 +87,19 @@ impl LogManager {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.file_manager
-            .borrow_mut()
-            .write(&self.cur_block, &mut self.log_page)?;
+        {
+            self.file_manager
+                .lock()
+                .expect("Failed to lock")
+                .write(&self.cur_block, &mut self.log_page)?;
+        }
         self.last_saved_lsn = self.latest_lsn;
         Ok(())
     }
 }
 
 pub struct LogIterator {
-    file_manager: Rc<RefCell<FileManager>>,
+    file_manager: Arc<Mutex<FileManager>>,
     block_id: BlockId,
     page: Page,
     cur_pos: u64,
@@ -102,25 +107,23 @@ pub struct LogIterator {
 }
 
 impl LogIterator {
-    pub fn new(file_manager: Rc<RefCell<FileManager>>, block: BlockId) -> Self {
-        let p = Page::new(file_manager.borrow_mut().block_size());
-        let mut log_itertor = LogIterator {
-            file_manager,
-            block_id: block.clone(),
-            page: p,
-            cur_pos: 0,
-            boundary: 0,
+    pub fn new(file_manager: Arc<Mutex<FileManager>>, block: BlockId) -> io::Result<Self> {
+        let (page, cur_pos, boundary) = {
+            let mut fm = file_manager.lock().expect("Failed to lock");
+            let mut p = Page::new(fm.block_size());
+
+            fm.read(&block, &mut p)?;
+            let boundary = p.get_int(0)?;
+            let cur_pos = boundary;
+            (p, cur_pos, boundary)
         };
-
-        log_itertor.move_to_block(&block).unwrap();
-        log_itertor
-    }
-
-    pub fn move_to_block(&mut self, block: &BlockId) -> io::Result<()> {
-        self.file_manager.borrow_mut().read(block, &mut self.page)?;
-        self.boundary = self.page.get_int(0)?;
-        self.cur_pos = self.boundary;
-        Ok(())
+        Ok(Self {
+            file_manager,
+            block_id: block,
+            page,
+            cur_pos,
+            boundary,
+        })
     }
 }
 
@@ -128,15 +131,18 @@ impl Iterator for LogIterator {
     type Item = Vec<u8>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.cur_pos >= self.file_manager.borrow().block_size() {
+        let mut fm = self.file_manager.lock().expect("Failed to lock");
+        if self.cur_pos >= fm.block_size() {
             return None;
         }
-        if self.cur_pos == self.file_manager.borrow_mut().block_size() {
+        if self.cur_pos == fm.block_size() {
             let block = BlockId::new(
                 self.block_id.filename().to_string(),
                 self.block_id.number() - 1,
             );
-            self.move_to_block(&block).unwrap();
+            fm.read(&block, &mut self.page).unwrap();
+            self.boundary = self.page.get_int(0).unwrap();
+            self.cur_pos = self.boundary;
         };
         let record = self.page.get_bytes(self.cur_pos).unwrap();
         self.cur_pos += INTEGER_SIZE + record.len() as u64;
@@ -146,10 +152,12 @@ impl Iterator for LogIterator {
 
 #[cfg(test)]
 mod tests {
-
-    use std::{fs, path::PathBuf};
-
     use super::*;
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::{Arc, Mutex},
+    };
 
     fn create_log_record(s: String, n: u64) -> Vec<u8> {
         let npos = Page::max_length(s.len());
@@ -169,7 +177,7 @@ mod tests {
             fs::remove_dir_all(dirname).expect("failed to remove dir");
         }
 
-        let fm = Rc::new(RefCell::new(FileManager::new(dirname).unwrap()));
+        let fm = Arc::new(Mutex::new(FileManager::new(dirname).unwrap()));
         let mut lm = LogManager::new(fm, filename.to_string());
         println!("creating records: ");
         for i in 0..35 {
