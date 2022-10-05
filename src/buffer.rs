@@ -34,8 +34,8 @@ impl Buffer {
         }
     }
 
-    pub fn contents(&self) -> &Page {
-        &self.contents
+    pub fn contents(&mut self) -> &mut Page {
+        &mut self.contents
     }
 
     pub fn set_modified(&mut self, txnum: i64, lsn: i64) {
@@ -175,5 +175,80 @@ impl BufferManager {
             .iter()
             .find(|b| !b.lock().unwrap().is_pinned())
             .map(Arc::clone)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Buffer, BufferManager};
+    use crate::{
+        file::{BlockId, FileManager},
+        log::LogManager,
+    };
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn test_buffer() {
+        let fm = Arc::new(Mutex::new(FileManager::new("__test_4").unwrap()));
+        let lm = Arc::new(Mutex::new(LogManager::new(
+            Arc::clone(&fm),
+            "test_log".to_string(),
+        )));
+        let mut bm = BufferManager::new(Arc::clone(&fm), Arc::clone(&lm), 3);
+
+        let buf1 = bm.pin(BlockId::new("testfile", 1));
+        {
+            let mut buf1 = buf1.lock().unwrap();
+            let p = buf1.contents();
+            let n = p.get_int(80).unwrap();
+            p.set_int(80, n + 1).unwrap();
+            buf1.set_modified(1, 0);
+        }
+        bm.unpin(buf1);
+
+        let buf2 = bm.pin(BlockId::new("testfile", 2));
+        let _buf3 = bm.pin(BlockId::new("testfile", 3));
+        let _buf4 = bm.pin(BlockId::new("testfile", 4));
+
+        bm.unpin(buf2);
+        let buf2 = bm.pin(BlockId::new("testfile", 1));
+        {
+            let mut p2 = buf2.lock().unwrap();
+            let p2 = p2.contents();
+            p2.set_int(80, 9999).unwrap();
+            buf2.lock().unwrap().set_modified(1, 0);
+        }
+        bm.unpin(buf2);
+    }
+
+    #[test]
+    fn test_buffer_manager() {
+        let fm = Arc::new(Mutex::new(FileManager::new("__test_4").unwrap()));
+        let lm = Arc::new(Mutex::new(LogManager::new(
+            Arc::clone(&fm),
+            "test_log".to_string(),
+        )));
+        let mut bm = BufferManager::new(Arc::clone(&fm), Arc::clone(&lm), 3);
+
+        let mut buf: Vec<Arc<Mutex<Buffer>>> = vec![];
+        buf.push(bm.pin(BlockId::new("testfile", 0)));
+        buf.push(bm.pin(BlockId::new("testfile", 1)));
+        buf.push(bm.pin(BlockId::new("testfile", 2)));
+        bm.unpin(buf[1].to_owned());
+
+        buf.push(bm.pin(BlockId::new("testfile", 0)));
+        buf.push(bm.pin(BlockId::new("testfile", 1)));
+        buf.push(bm.pin(BlockId::new("testfile", 3)));
+        bm.unpin(buf[2].to_owned());
+        buf.push(bm.pin(BlockId::new("testfile", 3)));
+
+        for i in 0..buf.len() {
+            match buf.get(i) {
+                Some(b) => {
+                    println!("buf[{}] pinned to block {:?}", i, b.lock().unwrap().block)
+                }
+                None => panic!(),
+            };
+        }
     }
 }
