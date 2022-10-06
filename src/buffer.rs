@@ -152,6 +152,15 @@ impl BufferManager {
             b.pin();
             drop(b);
             Some(Arc::clone(&buf))
+        } else if let Some(buf) = self.choose_unpinned_buffer() {
+            let mut b = buf.as_ref().lock().unwrap();
+            b.assign_to_block(block);
+            if !b.is_pinned() {
+                self.num_available -= 1;
+            };
+            b.pin();
+            drop(b);
+            Some(Arc::clone(&buf))
         } else {
             None
         }
@@ -230,8 +239,7 @@ mod tests {
         )));
         let mut bm = BufferManager::new(Arc::clone(&fm), Arc::clone(&lm), 3);
 
-        let mut buf: Vec<Arc<Mutex<Buffer>>> = vec![];
-        buf.push(bm.pin(BlockId::new("testfile", 0)));
+        let mut buf: Vec<Arc<Mutex<Buffer>>> = vec![bm.pin(BlockId::new("testfile", 0))];
         buf.push(bm.pin(BlockId::new("testfile", 1)));
         buf.push(bm.pin(BlockId::new("testfile", 2)));
         bm.unpin(buf[1].to_owned());
