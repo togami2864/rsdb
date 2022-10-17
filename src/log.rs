@@ -90,7 +90,7 @@ impl LogManager {
         {
             self.file_manager
                 .lock()
-                .expect("Failed to lock")
+                .unwrap()
                 .write(&self.cur_block, &mut self.log_page)?;
         }
         self.last_saved_lsn = self.latest_lsn;

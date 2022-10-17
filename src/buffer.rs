@@ -4,7 +4,8 @@ use crate::{
 };
 use std::{
     sync::{Arc, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 pub const MAX_TIME: u128 = 10000;
@@ -16,6 +17,7 @@ pub struct Buffer {
     contents: Page,
     block: Option<BlockId>,
     pins: u64,
+    /// transaction number
     txnum: i64,
     lsn: i64,
 }
@@ -63,10 +65,10 @@ impl Buffer {
 
     fn flush(&mut self) {
         if self.txnum >= 0 {
-            let mut fm = self.file_manager.lock().unwrap();
             let mut lm = self.log_manager.lock().unwrap();
             lm.flush_with_lsn(self.lsn as u64).unwrap();
             if let Some(blk) = &self.block {
+                let mut fm = self.file_manager.lock().unwrap();
                 fm.write(blk, &mut self.contents).unwrap();
                 self.txnum -= 1;
             }
@@ -122,16 +124,18 @@ impl BufferManager {
         }
     }
 
-    pub fn pin(&mut self, block: BlockId) -> Arc<Mutex<Buffer>> {
+    pub fn pin(&mut self, block: BlockId) -> Result<Arc<Mutex<Buffer>>, String> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis();
-        if let Some(buf) = self.try_to_pin(block) {
-            buf
-        } else {
-            todo!()
+        while !Self::waiting_too_long(timestamp) {
+            if let Some(buf) = self.try_to_pin(block.clone()) {
+                return Ok(buf);
+            }
+            thread::sleep(Duration::new(1, 0));
         }
+        Err("Algorithm using now can not get replace buffers".to_string())
     }
 
     fn waiting_too_long(start: u128) -> bool {
@@ -143,6 +147,16 @@ impl BufferManager {
             > MAX_TIME
     }
 
+    /// Naive algorithm: choose first unpinned buffer
+    ///
+    /// if (find existing buffer){
+    ///     - return buffer
+    /// } else if(find unpinned buffer){
+    ///     - associates the buffer with a disk block.
+    ///     - return buffer
+    /// } else {
+    ///     Error!: this algorithm doesn't have replacement rule.
+    /// }
     fn try_to_pin(&mut self, block: BlockId) -> Option<Arc<Mutex<Buffer>>> {
         if let Some(buf) = self.find_existing_buffer(&block) {
             let mut b = buf.as_ref().lock().unwrap();
@@ -194,7 +208,10 @@ mod tests {
         file::{BlockId, FileManager},
         log::LogManager,
     };
-    use std::sync::{Arc, Mutex};
+    use std::{
+        fs,
+        sync::{Arc, Mutex},
+    };
 
     #[test]
     fn test_buffer() {
@@ -204,8 +221,15 @@ mod tests {
             "test_log".to_string(),
         )));
         let mut bm = BufferManager::new(Arc::clone(&fm), Arc::clone(&lm), 3);
+        //
+        // buffer pool:
+        //      capacity = 3
+        // -------------- buffer pool ----------------
+        // |  [empty buf] [empty buf] [empty buf]    |
+        // ------------------------------------------
+        //
 
-        let buf1 = bm.pin(BlockId::new("testfile", 1));
+        let buf1 = bm.pin(BlockId::new("testfile", 1)).unwrap();
         {
             let mut buf1 = buf1.lock().unwrap();
             let p = buf1.contents();
@@ -215,48 +239,111 @@ mod tests {
         }
         bm.unpin(buf1);
 
-        let buf2 = bm.pin(BlockId::new("testfile", 2));
-        let _buf3 = bm.pin(BlockId::new("testfile", 3));
-        let _buf4 = bm.pin(BlockId::new("testfile", 4));
+        let buf2 = bm.pin(BlockId::new("testfile2", 2)).unwrap();
+        let _buf3 = bm.pin(BlockId::new("testfile3", 3)).unwrap();
+        let _buf4 = bm.pin(BlockId::new("testfile4", 4)).unwrap();
 
         bm.unpin(buf2);
-        let buf2 = bm.pin(BlockId::new("testfile", 1));
+        let buf2 = bm.pin(BlockId::new("testfile5", 11)).unwrap();
         {
-            let mut p2 = buf2.lock().unwrap();
-            let p2 = p2.contents();
+            let mut b2 = buf2.lock().unwrap();
+            let p2 = b2.contents();
             p2.set_int(80, 9999).unwrap();
-            buf2.lock().unwrap().set_modified(1, 0);
+            b2.set_modified(1, 0);
         }
         bm.unpin(buf2);
+
+        fs::remove_dir_all("__test_4").expect("failed to remove dir");
     }
 
     #[test]
     fn test_buffer_manager() {
-        let fm = Arc::new(Mutex::new(FileManager::new("__test_4").unwrap()));
+        let fm = Arc::new(Mutex::new(FileManager::new("__test_5").unwrap()));
         let lm = Arc::new(Mutex::new(LogManager::new(
             Arc::clone(&fm),
             "test_log".to_string(),
         )));
         let mut bm = BufferManager::new(Arc::clone(&fm), Arc::clone(&lm), 3);
+        assert_eq!(bm.available(), 3);
+        //
+        // buffer pool:
+        //      capacity = 3
+        // -------------- buffer pool ----------------
+        // |  [empty buf] [empty buf] [empty buf]    |
+        // ------------------------------------------
+        //
 
-        let mut buf: Vec<Arc<Mutex<Buffer>>> = vec![bm.pin(BlockId::new("testfile", 0))];
-        buf.push(bm.pin(BlockId::new("testfile", 1)));
-        buf.push(bm.pin(BlockId::new("testfile", 2)));
-        bm.unpin(buf[1].to_owned());
+        let mut buf: Vec<Option<Arc<Mutex<Buffer>>>> = vec![None; 6];
 
-        buf.push(bm.pin(BlockId::new("testfile", 0)));
-        buf.push(bm.pin(BlockId::new("testfile", 1)));
-        buf.push(bm.pin(BlockId::new("testfile", 3)));
-        bm.unpin(buf[2].to_owned());
-        buf.push(bm.pin(BlockId::new("testfile", 3)));
+        buf[0] = bm.pin(BlockId::new("t0", 0)).unwrap().into();
+        assert_eq!(bm.available(), 2);
+        //
+        // buffer pool:
+        //      capacity = 3
+        // -------------- buffer pool ---------------
+        // |  [t0, 0] [empty buf] [empty buf]       |
+        // ------------------------------------------
+        //
 
-        for i in 0..buf.len() {
-            match buf.get(i) {
-                Some(b) => {
-                    println!("buf[{}] pinned to block {:?}", i, b.lock().unwrap().block)
-                }
-                None => panic!(),
-            };
-        }
+        buf[1] = bm.pin(BlockId::new("t1", 1)).unwrap().into();
+        assert_eq!(bm.available(), 1);
+        //
+        // buffer pool:
+        //      capacity = 3
+        // ------------- buffer pool -----------
+        // |     [t0, 0] [t1, 1] [empty buf]   |
+        // -------------------------------------
+        //
+
+        buf[2] = bm.pin(BlockId::new("t2", 2)).unwrap().into();
+        assert_eq!(bm.available(), 0);
+        //
+        // buffer pool:
+        //      capacity = 3
+        // ---------------- buffer pool ----------------
+        // |          [t0, 0] [t1, 1] [t2, 2]          |
+        // ---------------------------------------------
+        //
+
+        bm.unpin(Arc::clone(buf[1].as_ref().unwrap()));
+        buf[1] = None;
+        assert_eq!(bm.available(), 1);
+        //
+        // buffer pool:
+        //      capacity = 3
+        // ------------ buffer pool -------------
+        // |         [t0, 0] [] [t2, 2]         |
+        // --------------------------------------
+        //
+
+        buf[3] = bm.pin(BlockId::new("t3", 3)).unwrap().into();
+        assert_eq!(bm.available(), 0);
+        //
+        // buffer pool:
+        //      capacity = 3
+        // -------------- buffer pool ----------------
+        // |           [t0, 0] [t3, 3] [t2, 2]       |
+        // -------------------------------------------
+        //
+
+        // Get existing buffer
+        let b4 = bm.pin(BlockId::new("t3", 3));
+        assert!(b4.is_ok());
+        buf[4] = Some(b4.unwrap());
+
+        // Pin buffer above the capacity should `error` in this naive algorithm.
+        let b5 = bm.pin(BlockId::new("t5", 5));
+        println!("Algorithm using in this manager can not replace buffers");
+        assert!(b5.is_err());
+        buf[5] = None;
+
+        assert!(buf[0].is_some());
+        assert!(buf[1].is_none());
+        assert!(buf[2].is_some());
+        assert!(buf[3].is_some());
+        assert!(buf[4].is_some());
+        assert!(buf[5].is_none());
+
+        fs::remove_dir_all("__test_5").expect("failed to remove dir");
     }
 }

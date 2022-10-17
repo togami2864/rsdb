@@ -162,12 +162,12 @@ impl FileManager {
     }
 
     pub fn read(&mut self, block_id: &BlockId, p: &mut Page) -> io::Result<()> {
-        let offset = self.block_size() * block_id.number() as u64;
+        let offset = self.block_size() * block_id.number();
         match self.get_file(block_id.filename()) {
             Ok(file) => {
                 let mut f = file.lock().expect("Failed to lock");
                 f.seek(SeekFrom::Start(offset))?;
-                f.read_exact(p.contents())?;
+                let _ = f.read(p.contents())?;
             }
             Err(_) => todo!(),
         }
