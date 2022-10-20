@@ -1,9 +1,8 @@
-use std::{
-    io,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
 use crate::file::{BlockId, FileManager, Page, I32_SIZE};
+
+use crate::file::Result;
 
 #[derive(Debug)]
 pub struct LogManager {
@@ -11,8 +10,8 @@ pub struct LogManager {
     log_file_name: String,
     log_page: Page,
     cur_block: BlockId,
-    latest_lsn: u64,
-    last_saved_lsn: u64,
+    latest_lsn: i32,
+    last_saved_lsn: i32,
 }
 
 impl LogManager {
@@ -45,7 +44,7 @@ impl LogManager {
         }
     }
 
-    pub fn append(&mut self, log_record: Vec<u8>) -> io::Result<u64> {
+    pub fn append(&mut self, log_record: Vec<u8>) -> Result<i32> {
         let boundary = self.log_page.get_i32(0)?;
         let record_size = log_record.len() as i32;
         let byte_needed = record_size + I32_SIZE as i32;
@@ -64,7 +63,7 @@ impl LogManager {
         Ok(self.latest_lsn)
     }
 
-    pub fn append_new_block(&mut self) -> io::Result<BlockId> {
+    pub fn append_new_block(&mut self) -> Result<BlockId> {
         let block = {
             let mut fm = self.file_manager.lock().expect("Failed to lock");
             let block = fm.append(&self.log_file_name).unwrap();
@@ -75,19 +74,19 @@ impl LogManager {
         Ok(block)
     }
 
-    pub fn iterator(&mut self) -> io::Result<LogIterator> {
+    pub fn iterator(&mut self) -> Result<LogIterator> {
         self.flush().unwrap();
         Ok(LogIterator::new(Arc::clone(&self.file_manager), self.cur_block.clone()).unwrap())
     }
 
-    pub fn flush_with_lsn(&mut self, lsn: u64) -> io::Result<()> {
+    pub fn flush_with_lsn(&mut self, lsn: i32) -> Result<()> {
         if lsn >= self.last_saved_lsn {
             self.flush()?;
         };
         Ok(())
     }
 
-    fn flush(&mut self) -> io::Result<()> {
+    fn flush(&mut self) -> Result<()> {
         {
             self.file_manager
                 .lock()
@@ -108,7 +107,7 @@ pub struct LogIterator {
 }
 
 impl LogIterator {
-    pub fn new(file_manager: Arc<Mutex<FileManager>>, block: BlockId) -> io::Result<Self> {
+    pub fn new(file_manager: Arc<Mutex<FileManager>>, block: BlockId) -> Result<Self> {
         let (page, cur_pos, boundary) = {
             let mut fm = file_manager.lock().expect("Failed to lock");
             let mut p = Page::new(fm.block_size());
@@ -125,6 +124,10 @@ impl LogIterator {
             cur_pos,
             boundary,
         })
+    }
+
+    pub fn has_next(&self) -> bool {
+        self.cur_pos < self.file_manager.lock().unwrap().block_size() || self.block_id.number() > 0
     }
 }
 

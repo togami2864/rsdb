@@ -40,9 +40,9 @@ impl Transaction {
 
     pub fn pin() {}
     pub fn unpin() {}
-    pub fn get_int() {}
+    pub fn get_u64() {}
     pub fn get_string() {}
-    pub fn set_int() {}
+    pub fn set_u64() {}
     pub fn set_string() {}
     pub fn available_buff() {}
 
@@ -72,7 +72,7 @@ mod tests {
         let tx1 = Transaction::new(fm, lm, bm);
         let b = BlockId::new("t0", 0);
         tx1.pin(b);
-        tx1.set_int(b, 80, 1, false);
+        tx1.set_u64(b, 80, 1, false);
         tx1.set_string(b, 40, "one", false);
         tx1.commit();
 

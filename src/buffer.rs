@@ -18,8 +18,8 @@ pub struct Buffer {
     block: Option<BlockId>,
     pins: u64,
     /// transaction number
-    txnum: i64,
-    lsn: i64,
+    txnum: i32,
+    lsn: i32,
 }
 
 impl Buffer {
@@ -40,7 +40,7 @@ impl Buffer {
         &mut self.contents
     }
 
-    pub fn set_modified(&mut self, txnum: i64, lsn: i64) {
+    pub fn set_modified(&mut self, txnum: i32, lsn: i32) {
         self.txnum = txnum;
         if lsn >= 0 {
             self.lsn = lsn;
@@ -51,7 +51,7 @@ impl Buffer {
         self.pins > 0
     }
 
-    pub fn modifying_tx(&self) -> i64 {
+    pub fn modifying_tx(&self) -> i32 {
         self.txnum
     }
 
@@ -66,7 +66,7 @@ impl Buffer {
     fn flush(&mut self) {
         if self.txnum >= 0 {
             let mut lm = self.log_manager.lock().unwrap();
-            lm.flush_with_lsn(self.lsn as u64).unwrap();
+            lm.flush_with_lsn(self.lsn).unwrap();
             if let Some(blk) = &self.block {
                 let mut fm = self.file_manager.lock().unwrap();
                 fm.write(blk, &mut self.contents).unwrap();
@@ -107,7 +107,7 @@ impl BufferManager {
         self.num_available
     }
 
-    pub fn flush_all(&mut self, txnum: i64) {
+    pub fn flush_all(&mut self, txnum: i32) {
         for buf in self.buffer_pool.iter() {
             let mut buf = buf.lock().unwrap();
             if buf.modifying_tx() == txnum {
@@ -233,8 +233,8 @@ mod tests {
         {
             let mut buf1 = buf1.lock().unwrap();
             let p = buf1.contents();
-            let n = p.get_int(80).unwrap();
-            p.set_int(80, n + 1).unwrap();
+            let n = p.get_u64(80).unwrap();
+            p.set_u64(80, n + 1).unwrap();
             buf1.set_modified(1, 0);
         }
         bm.unpin(buf1);
@@ -248,7 +248,7 @@ mod tests {
         {
             let mut b2 = buf2.lock().unwrap();
             let p2 = b2.contents();
-            p2.set_int(80, 9999).unwrap();
+            p2.set_u64(80, 9999).unwrap();
             b2.set_modified(1, 0);
         }
         bm.unpin(buf2);

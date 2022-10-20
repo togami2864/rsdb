@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::hash::Hash;
-use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
+use std::io::{self, Cursor, Error, Read, Seek, SeekFrom, Write};
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -11,6 +11,27 @@ use std::sync::{Arc, Mutex};
 pub const BLOCK_SIZE: i32 = 4096;
 pub const U64_SIZE: usize = mem::size_of::<u64>();
 pub const I32_SIZE: usize = mem::size_of::<i32>();
+
+#[derive(Debug)]
+pub enum FileError {
+    IoError(Error),
+}
+
+impl fmt::Display for FileError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FileError::IoError(err) => write!(f, "File error: {}", err),
+        }
+    }
+}
+
+impl From<io::Error> for FileError {
+    fn from(value: io::Error) -> Self {
+        FileError::IoError(value)
+    }
+}
+
+pub type Result<T> = std::result::Result<T, FileError>;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 struct BlockNum(pub i32);
@@ -65,7 +86,7 @@ impl Page {
     }
 
     /// read 8 bytes from offset value
-    pub fn get_u64(&mut self, offset: u64) -> io::Result<u64> {
+    pub fn get_u64(&mut self, offset: u64) -> Result<u64> {
         self.bb.seek(SeekFrom::Start(offset))?;
         let buf: &mut [u8; U64_SIZE] = &mut [0; U64_SIZE];
         self.bb.read_exact(buf)?;
@@ -73,7 +94,7 @@ impl Page {
     }
 
     /// read 4 bytes from offset value
-    pub fn get_i32(&mut self, offset: u64) -> io::Result<i32> {
+    pub fn get_i32(&mut self, offset: u64) -> Result<i32> {
         self.bb.seek(SeekFrom::Start(offset))?;
         let mut buf: [u8; I32_SIZE] = [0; I32_SIZE];
         self.bb.read_exact(&mut buf)?;
@@ -81,7 +102,7 @@ impl Page {
     }
 
     /// write u64 value to the byte buffer
-    pub fn set_u64(&mut self, offset: u64, val: u64) -> io::Result<()> {
+    pub fn set_u64(&mut self, offset: u64, val: u64) -> Result<()> {
         self.bb.seek(SeekFrom::Start(offset))?;
         let data = u64::to_be_bytes(val);
         self.bb.write_all(&data)?;
@@ -89,7 +110,7 @@ impl Page {
     }
 
     /// write i32 value to the byte buffer
-    pub fn set_i32(&mut self, offset: u64, val: i32) -> io::Result<()> {
+    pub fn set_i32(&mut self, offset: u64, val: i32) -> Result<()> {
         self.bb.seek(SeekFrom::Start(offset))?;
         let data = i32::to_be_bytes(val);
         self.bb.write_all(&data)?;
@@ -97,32 +118,32 @@ impl Page {
     }
 
     /// read 4 bytes and return it
-    pub fn get_bytes(&mut self, offset: u64) -> io::Result<Vec<u8>> {
+    pub fn get_bytes(&mut self, offset: u64) -> Result<Vec<u8>> {
         let len = self.get_i32(offset)? as usize;
         let mut buf = vec![0; len];
         self.bb.read_exact(buf.as_mut())?;
         Ok(buf)
     }
 
-    pub fn set_bytes(&mut self, offset: u64, byte: &[u8]) -> io::Result<()> {
+    pub fn set_bytes(&mut self, offset: u64, byte: &[u8]) -> Result<()> {
         self.set_i32(offset, byte.len() as i32)?;
         self.bb.write_all(byte).unwrap();
         Ok(())
     }
 
     /// read 4bytes and convert it to String
-    pub fn get_string(&mut self, offset: u64) -> io::Result<String> {
+    pub fn get_string(&mut self, offset: u64) -> Result<String> {
         let byte = self.get_bytes(offset)?;
         Ok(String::from_utf8(byte).unwrap())
     }
 
-    pub fn set_string(&mut self, offset: u64, s: &str) -> io::Result<()> {
+    pub fn set_string(&mut self, offset: u64, s: &str) -> Result<()> {
         self.set_bytes(offset, s.as_bytes())?;
         Ok(())
     }
 
-    pub fn max_length(strlen: usize) -> u64 {
-        (I32_SIZE + strlen) as u64
+    pub fn max_length(strlen: usize) -> i32 {
+        (I32_SIZE + strlen) as i32
     }
 
     pub fn contents(&mut self) -> &mut Vec<u8> {
@@ -146,7 +167,7 @@ pub struct FileManager {
 }
 
 impl FileManager {
-    pub fn new(db_dir: impl AsRef<Path>) -> io::Result<Self> {
+    pub fn new(db_dir: impl AsRef<Path>) -> Result<Self> {
         let is_exist = db_dir.as_ref().exists();
         if !is_exist {
             fs::create_dir_all(&db_dir).expect("Failed to create dir");
@@ -173,13 +194,13 @@ impl FileManager {
         self.is_new
     }
 
-    pub fn length(&mut self, filename: &str) -> io::Result<i32> {
+    pub fn length(&mut self, filename: &str) -> Result<i32> {
         let f = self.get_file(filename)?;
         let file_size = f.lock().unwrap().metadata()?.len() as i32;
         Ok(file_size / self.block_size())
     }
 
-    pub fn read(&mut self, block_id: &BlockId, p: &mut Page) -> io::Result<()> {
+    pub fn read(&mut self, block_id: &BlockId, p: &mut Page) -> Result<()> {
         let offset = self.block_size() * block_id.number();
         match self.get_file(block_id.filename()) {
             Ok(file) => {
@@ -192,7 +213,7 @@ impl FileManager {
         Ok(())
     }
 
-    pub fn write(&mut self, block_id: &BlockId, p: &mut Page) -> io::Result<()> {
+    pub fn write(&mut self, block_id: &BlockId, p: &mut Page) -> Result<()> {
         let offset = self.block_size() * block_id.number();
         match self.get_file(block_id.filename()) {
             Ok(file) => {
@@ -207,7 +228,7 @@ impl FileManager {
 
     /// `append` seeks to the end of the file and writes an empty array of bytes to it,
     ///  which  causes the OS to automatically extend the file.
-    pub fn append(&mut self, filename: &str) -> io::Result<BlockId> {
+    pub fn append(&mut self, filename: &str) -> Result<BlockId> {
         let blk_num = filename.len() as i32;
         let block = BlockId::new(filename.to_string(), blk_num);
         let offset = self.block_size * block.number();
@@ -221,7 +242,7 @@ impl FileManager {
         Ok(block)
     }
 
-    pub fn get_file(&mut self, filename: &str) -> io::Result<&mut Arc<Mutex<File>>> {
+    pub fn get_file(&mut self, filename: &str) -> Result<&mut Arc<Mutex<File>>> {
         match self.open_files.entry(filename.to_string()) {
             Entry::Occupied(entry) => Ok(entry.into_mut()),
             Entry::Vacant(entry) => {
@@ -320,7 +341,7 @@ mod tests {
         let pos_1 = 88;
         p1.set_string(pos_1, "abcdefghijklm").unwrap();
 
-        let size = Page::max_length("abcdefghijklm".len());
+        let size = Page::max_length("abcdefghijklm".len()) as u64;
         let pos_2 = pos_1 + size;
         p1.set_i32(pos_2, 345).unwrap();
         fm.write(&block_id, &mut p1).unwrap();
