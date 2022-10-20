@@ -4,16 +4,18 @@ use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::hash::Hash;
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
+use std::mem;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-pub const BLOCK_SIZE: u64 = 4096;
-pub const INTEGER_SIZE: u64 = 8;
+pub const BLOCK_SIZE: i32 = 4096;
+pub const U64_SIZE: usize = mem::size_of::<u64>();
+pub const I32_SIZE: usize = mem::size_of::<i32>();
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
-struct BlockNum(pub u64);
+struct BlockNum(pub i32);
 impl BlockNum {
-    pub fn as_u64(&self) -> u64 {
+    pub fn as_i32(&self) -> i32 {
         self.0
     }
 }
@@ -26,7 +28,7 @@ pub struct BlockId {
 }
 
 impl BlockId {
-    pub fn new(filename: impl Into<String>, block_id: u64) -> Self {
+    pub fn new(filename: impl Into<String>, block_id: i32) -> Self {
         Self {
             filename: filename.into(),
             block_id: BlockNum(block_id),
@@ -37,8 +39,8 @@ impl BlockId {
         &self.filename
     }
 
-    pub fn number(&self) -> u64 {
-        self.block_id.as_u64()
+    pub fn number(&self) -> i32 {
+        self.block_id.as_i32()
     }
 }
 
@@ -55,7 +57,7 @@ pub struct Page {
 }
 
 impl Page {
-    pub fn new(capacity: u64) -> Self {
+    pub fn new(capacity: i32) -> Self {
         let buf = vec![0; capacity as usize];
         Page {
             bb: Cursor::new(buf),
@@ -63,36 +65,52 @@ impl Page {
     }
 
     /// read 8 bytes from offset value
-    pub fn get_int(&mut self, offset: u64) -> io::Result<u64> {
+    pub fn get_u64(&mut self, offset: u64) -> io::Result<u64> {
         self.bb.seek(SeekFrom::Start(offset))?;
-        let buf: &mut [u8; 8] = &mut [0; 8];
+        let buf: &mut [u8; U64_SIZE] = &mut [0; U64_SIZE];
         self.bb.read_exact(buf)?;
         Ok(u64::from_be_bytes(*buf))
     }
 
-    /// write integer to byte buffer from offset
-    pub fn set_int(&mut self, offset: u64, val: u64) -> io::Result<()> {
+    /// read 4 bytes from offset value
+    pub fn get_i32(&mut self, offset: u64) -> io::Result<i32> {
+        self.bb.seek(SeekFrom::Start(offset))?;
+        let mut buf: [u8; I32_SIZE] = [0; I32_SIZE];
+        self.bb.read_exact(&mut buf)?;
+        Ok(i32::from_be_bytes(buf))
+    }
+
+    /// write u64 value to the byte buffer
+    pub fn set_u64(&mut self, offset: u64, val: u64) -> io::Result<()> {
         self.bb.seek(SeekFrom::Start(offset))?;
         let data = u64::to_be_bytes(val);
         self.bb.write_all(&data)?;
         Ok(())
     }
 
-    /// read 8 bytes and return it
+    /// write i32 value to the byte buffer
+    pub fn set_i32(&mut self, offset: u64, val: i32) -> io::Result<()> {
+        self.bb.seek(SeekFrom::Start(offset))?;
+        let data = i32::to_be_bytes(val);
+        self.bb.write_all(&data)?;
+        Ok(())
+    }
+
+    /// read 4 bytes and return it
     pub fn get_bytes(&mut self, offset: u64) -> io::Result<Vec<u8>> {
-        let len = self.get_int(offset)? as usize;
+        let len = self.get_i32(offset)? as usize;
         let mut buf = vec![0; len];
         self.bb.read_exact(buf.as_mut())?;
         Ok(buf)
     }
 
     pub fn set_bytes(&mut self, offset: u64, byte: &[u8]) -> io::Result<()> {
-        self.set_int(offset, byte.len() as u64)?;
+        self.set_i32(offset, byte.len() as i32)?;
         self.bb.write_all(byte).unwrap();
         Ok(())
     }
 
-    /// read 8bytes and convert it to String
+    /// read 4bytes and convert it to String
     pub fn get_string(&mut self, offset: u64) -> io::Result<String> {
         let byte = self.get_bytes(offset)?;
         Ok(String::from_utf8(byte).unwrap())
@@ -104,7 +122,7 @@ impl Page {
     }
 
     pub fn max_length(strlen: usize) -> u64 {
-        INTEGER_SIZE + strlen as u64
+        (I32_SIZE + strlen) as u64
     }
 
     pub fn contents(&mut self) -> &mut Vec<u8> {
@@ -123,7 +141,7 @@ impl From<Vec<u8>> for Page {
 pub struct FileManager {
     open_files: HashMap<String, Arc<Mutex<File>>>,
     db_dir: PathBuf,
-    block_size: u64,
+    block_size: i32,
     is_new: bool,
 }
 
@@ -147,7 +165,7 @@ impl FileManager {
         })
     }
 
-    pub fn block_size(&self) -> u64 {
+    pub fn block_size(&self) -> i32 {
         self.block_size
     }
 
@@ -155,9 +173,9 @@ impl FileManager {
         self.is_new
     }
 
-    pub fn length(&mut self, filename: &str) -> io::Result<u64> {
+    pub fn length(&mut self, filename: &str) -> io::Result<i32> {
         let f = self.get_file(filename)?;
-        let file_size = f.lock().unwrap().metadata()?.len();
+        let file_size = f.lock().unwrap().metadata()?.len() as i32;
         Ok(file_size / self.block_size())
     }
 
@@ -166,7 +184,7 @@ impl FileManager {
         match self.get_file(block_id.filename()) {
             Ok(file) => {
                 let mut f = file.lock().expect("Failed to lock");
-                f.seek(SeekFrom::Start(offset))?;
+                f.seek(SeekFrom::Start(offset as u64))?;
                 let _ = f.read(p.contents())?;
             }
             Err(_) => todo!(),
@@ -179,7 +197,7 @@ impl FileManager {
         match self.get_file(block_id.filename()) {
             Ok(file) => {
                 let mut f = file.lock().expect("Failed to lock");
-                f.seek(SeekFrom::Start(offset))?;
+                f.seek(SeekFrom::Start(offset as u64))?;
                 f.write_all(p.contents())?;
             }
             Err(_) => todo!(),
@@ -190,14 +208,14 @@ impl FileManager {
     /// `append` seeks to the end of the file and writes an empty array of bytes to it,
     ///  which  causes the OS to automatically extend the file.
     pub fn append(&mut self, filename: &str) -> io::Result<BlockId> {
-        let blk_num = filename.len() as u64;
+        let blk_num = filename.len() as i32;
         let block = BlockId::new(filename.to_string(), blk_num);
         let offset = self.block_size * block.number();
 
         let empty_buf = &[];
         {
             let mut file = self.get_file(filename)?.lock().expect("Failed to lock");
-            file.seek(SeekFrom::Start(offset))?;
+            file.seek(SeekFrom::Start(offset as u64))?;
             file.write_all(empty_buf)?;
         }
         Ok(block)
@@ -224,15 +242,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn set_and_get_integer_from_page() {
+    fn set_and_get_i32_from_page() {
         let mut p1 = Page::new(BLOCK_SIZE);
-        p1.set_int(0, 64).unwrap();
-        assert_eq!(p1.get_int(0).unwrap(), 64);
+        p1.set_i32(0, 64).unwrap();
+        assert_eq!(p1.get_i32(0).unwrap(), 64);
+        //
+        // [0,0,0,64,0,0,0 .........0, 0]:[u8; 4096]
+        //
 
         let mut p2 = Page::new(BLOCK_SIZE);
-        p2.set_int(16, 64).unwrap();
-        assert_eq!(p2.get_int(16).unwrap(), 64);
-        assert_eq!(p2.get_int(0).unwrap(), 0);
+        p2.set_i32(16, 64).unwrap();
+        assert_eq!(p2.get_i32(16).unwrap(), 64);
+        assert_eq!(p2.get_i32(0).unwrap(), 0);
+        //                              16 -|
+        // [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,64,0,0,......0,0]:[u8; 4096]
+        //
     }
 
     #[test]
@@ -244,7 +268,7 @@ mod tests {
         let mut p2 = Page::new(BLOCK_SIZE);
         p2.set_bytes(16, &[0, 0, 0, 128]).unwrap();
         assert_eq!(p2.get_bytes(16).unwrap(), &[0, 0, 0, 128]);
-        assert_eq!(p2.get_int(0).unwrap(), 0);
+        assert_eq!(p2.get_i32(0).unwrap(), 0);
     }
 
     #[test]
@@ -264,7 +288,7 @@ mod tests {
             fs::remove_dir_all(dirname).expect("failed to remove dir");
         }
 
-        let mut file_manager = FileManager::new(dirname).expect("here");
+        let mut file_manager = FileManager::new(dirname).expect("Failed to init file_manager");
         let block = BlockId::new(filename, 0);
         let mut p = Page::new(BLOCK_SIZE);
         p.set_string(0, "sample text").unwrap();
@@ -298,7 +322,7 @@ mod tests {
 
         let size = Page::max_length("abcdefghijklm".len());
         let pos_2 = pos_1 + size;
-        p1.set_int(pos_2, 345).unwrap();
+        p1.set_i32(pos_2, 345).unwrap();
         fm.write(&block_id, &mut p1).unwrap();
 
         if path.to_owned().exists() {
