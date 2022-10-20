@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::file::{BlockId, FileManager, Page, INTEGER_SIZE};
+use crate::file::{BlockId, FileManager, Page, I32_SIZE};
 
 #[derive(Debug)]
 pub struct LogManager {
@@ -24,7 +24,7 @@ impl LogManager {
             let log_size = fm.length(&log_file_name).unwrap();
             let cur_block = if log_size == 0 {
                 let block = fm.append(&log_file_name).unwrap();
-                log_page.set_int(0, fm.block_size()).unwrap();
+                log_page.set_i32(0, fm.block_size()).unwrap();
                 fm.write(&block, &mut log_page).unwrap();
                 block
             } else {
@@ -46,19 +46,20 @@ impl LogManager {
     }
 
     pub fn append(&mut self, log_record: Vec<u8>) -> io::Result<u64> {
-        let boundary = self.log_page.get_int(0)?;
-        let record_size = log_record.len() as u64;
-        let byte_needed = record_size + INTEGER_SIZE;
-        let boundary = if (boundary - byte_needed) < INTEGER_SIZE {
+        let boundary = self.log_page.get_i32(0)?;
+        let record_size = log_record.len() as i32;
+        let byte_needed = record_size + I32_SIZE as i32;
+        let boundary = if (boundary - byte_needed) < I32_SIZE.try_into().unwrap() {
             self.flush()?;
             self.cur_block = self.append_new_block()?;
-            self.log_page.get_int(0)?
+            self.log_page.get_i32(0)?
         } else {
             boundary
         };
         let record_pos = boundary - byte_needed;
-        self.log_page.set_bytes(record_pos, &log_record)?;
-        self.log_page.set_int(0, record_pos)?;
+        self.log_page
+            .set_bytes(record_pos.try_into().unwrap(), &log_record)?;
+        self.log_page.set_i32(0, record_pos)?;
         self.latest_lsn += 1;
         Ok(self.latest_lsn)
     }
@@ -67,7 +68,7 @@ impl LogManager {
         let block = {
             let mut fm = self.file_manager.lock().expect("Failed to lock");
             let block = fm.append(&self.log_file_name).unwrap();
-            self.log_page.set_int(0, fm.block_size())?;
+            self.log_page.set_i32(0, fm.block_size())?;
             fm.write(&block, &mut self.log_page)?;
             block
         };
@@ -102,8 +103,8 @@ pub struct LogIterator {
     file_manager: Arc<Mutex<FileManager>>,
     block_id: BlockId,
     page: Page,
-    cur_pos: u64,
-    boundary: u64,
+    cur_pos: i32,
+    boundary: i32,
 }
 
 impl LogIterator {
@@ -113,7 +114,7 @@ impl LogIterator {
             let mut p = Page::new(fm.block_size());
 
             fm.read(&block, &mut p)?;
-            let boundary = p.get_int(0)?;
+            let boundary = p.get_i32(0)?;
             let cur_pos = boundary;
             (p, cur_pos, boundary)
         };
@@ -141,11 +142,11 @@ impl Iterator for LogIterator {
                 self.block_id.number() - 1,
             );
             fm.read(&block, &mut self.page).unwrap();
-            self.boundary = self.page.get_int(0).unwrap();
+            self.boundary = self.page.get_i32(0).unwrap();
             self.cur_pos = self.boundary;
         };
-        let record = self.page.get_bytes(self.cur_pos).unwrap();
-        self.cur_pos += INTEGER_SIZE + record.len() as u64;
+        let record = self.page.get_bytes(self.cur_pos as u64).unwrap();
+        self.cur_pos += (I32_SIZE + record.len()) as i32;
         Some(record)
     }
 }
@@ -159,11 +160,11 @@ mod tests {
         sync::{Arc, Mutex},
     };
 
-    fn create_log_record(s: String, n: u64) -> Vec<u8> {
+    fn create_log_record(s: String, len: i32) -> Vec<u8> {
         let npos = Page::max_length(s.len());
-        let mut p = Page::new(npos + INTEGER_SIZE);
+        let mut p = Page::new(npos + I32_SIZE as i32);
         p.set_string(0, &s).unwrap();
-        p.set_int(npos, n).unwrap();
+        p.set_i32(npos as u64, len).unwrap();
         p.contents().to_vec()
     }
 
@@ -189,7 +190,7 @@ mod tests {
             let mut page = Page::from(rec);
             let s = page.get_string(0).unwrap();
             let npos = Page::max_length(s.len());
-            let val = page.get_int(npos).unwrap();
+            let val = page.get_i32(npos as u64).unwrap();
             assert_eq!(s.to_string(), format!("record{}", val).to_string());
         }
 
